@@ -1,5 +1,7 @@
-import crypto from "node:crypto";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
+import crypto from "node:crypto";
+import type { SafeBinProfile } from "../infra/exec-safe-bin-policy.js";
+import type { ExecToolDetails } from "./bash-tools.exec-types.js";
 import {
   addAllowlistEntry,
   type ExecAsk,
@@ -11,8 +13,7 @@ import {
   resolveAllowAlwaysPatterns,
 } from "../infra/exec-approvals.js";
 import { detectCommandObfuscation } from "../infra/exec-obfuscation-detect.js";
-import type { SafeBinProfile } from "../infra/exec-safe-bin-policy.js";
-import { logInfo } from "../logger.js";
+import { logInfo, logWarn } from "../logger.js";
 import { markBackgrounded, tail } from "./bash-process-registry.js";
 import {
   buildExecApprovalRequesterContext,
@@ -31,7 +32,6 @@ import {
   normalizeNotifyOutput,
   runExecProcess,
 } from "./bash-tools.exec-runtime.js";
-import type { ExecToolDetails } from "./bash-tools.exec-types.js";
 
 export type ProcessGatewayAllowlistParams = {
   command: string;

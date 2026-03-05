@@ -5,6 +5,7 @@ import {
   type ExecAsk,
   type ExecSecurity,
 } from "../infra/exec-approvals.js";
+import { logWarn } from "../logger.js";
 import { resolveRegisteredExecApprovalDecision } from "./bash-tools.exec-approval-request.js";
 
 type ResolvedExecApprovals = ReturnType<typeof resolveExecApprovals>;
@@ -29,6 +30,16 @@ export function resolveExecHostApprovalContext(params: {
   const hostSecurity = minSecurity(params.security, approvals.agent.security);
   const hostAsk = maxAsk(params.ask, approvals.agent.ask);
   const askFallback = approvals.agent.askFallback;
+  if (hostSecurity !== params.security) {
+    logWarn(
+      `exec: agent=${params.agentId ?? "default"} security '${params.security}' clamped to '${hostSecurity}' by agent exec approvals for host=${params.host}`,
+    );
+  }
+  if (hostAsk !== params.ask) {
+    logWarn(
+      `exec: agent=${params.agentId ?? "default"} ask '${params.ask}' clamped to '${hostAsk}' by agent exec approvals for host=${params.host}`,
+    );
+  }
   if (hostSecurity === "deny") {
     throw new Error(`exec denied: host=${params.host} security=deny`);
   }

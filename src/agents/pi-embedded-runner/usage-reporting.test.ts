@@ -122,8 +122,8 @@ describe("runEmbeddedPiAgent usage reporting", () => {
       sessionKey: "test-key",
       sessionFile: "/tmp/session.json",
       workspaceDir: "/tmp/workspace",
-      prompt:
-        "Read HEARTBEAT.md if it exists (workspace context). Follow it strictly. If nothing needs attention, reply HEARTBEAT_OK.",
+      prompt: "Use the heartbeat instructions for this workspace. Reply HEARTBEAT_OK if idle.",
+      trigger: "heartbeat",
       timeoutMs: 30000,
       runId: "run-heartbeat-tool-requirement",
     });
@@ -132,6 +132,77 @@ describe("runEmbeddedPiAgent usage reporting", () => {
     expect(result.meta.error?.kind).toBe("required_tool_use");
     expect(result.payloads?.[0]?.text).toContain("HEARTBEAT.md");
     expect(result.payloads?.[0]?.text).toContain("read tool");
+  });
+
+  it("lets timeout errors win over required-tool-use errors", async () => {
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce({
+      aborted: true,
+      promptError: null,
+      timedOut: true,
+      timedOutDuringCompaction: false,
+      sessionIdUsed: "test-session",
+      assistantTexts: [],
+      toolMetas: [],
+      didSendViaMessagingTool: false,
+      lastAssistant: null,
+      attemptUsage: { input: 10, output: 0, total: 10 },
+      messagingToolSentTexts: [],
+      messagingToolSentMediaUrls: [],
+      messagingToolSentTargets: [],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    const result = await runEmbeddedPiAgent({
+      sessionId: "test-session",
+      sessionKey: "test-key",
+      sessionFile: "/tmp/session.json",
+      workspaceDir: "/tmp/workspace",
+      prompt: "Call the cron tool with action=list.",
+      timeoutMs: 30000,
+      runId: "run-timeout-before-tool",
+    });
+
+    expect(result.meta.error?.kind).toBeUndefined();
+    expect(result.payloads?.[0]?.isError).toBe(true);
+    expect(result.payloads?.[0]?.text).toContain(
+      "Request timed out before a response was generated",
+    );
+  });
+
+  it("allows callers to disable prompt-inferred tool requirements explicitly", async () => {
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce({
+      aborted: false,
+      promptError: null,
+      timedOut: false,
+      timedOutDuringCompaction: false,
+      sessionIdUsed: "test-session",
+      assistantTexts: ["Handled without tools."],
+      toolMetas: [],
+      didSendViaMessagingTool: false,
+      lastAssistant: {
+        usage: { input: 10, output: 5, total: 15 },
+        stopReason: "end_turn",
+      },
+      attemptUsage: { input: 10, output: 5, total: 15 },
+      messagingToolSentTexts: [],
+      messagingToolSentMediaUrls: [],
+      messagingToolSentTargets: [],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    const result = await runEmbeddedPiAgent({
+      sessionId: "test-session",
+      sessionKey: "test-key",
+      sessionFile: "/tmp/session.json",
+      workspaceDir: "/tmp/workspace",
+      prompt: "Call the cron tool with action=list.",
+      requireToolUse: false,
+      timeoutMs: 30000,
+      runId: "run-disable-inferred-tool-requirement",
+    });
+
+    expect(result.meta.error).toBeUndefined();
+    expect(result.payloads?.[0]?.isError).not.toBe(true);
   });
 
   it("allows success when a required tool was called", async () => {

@@ -154,7 +154,17 @@ function normalizeRequiredToolNames(toolNames: string[] | undefined): string[] |
   return normalized.length > 0 ? Array.from(new Set(normalized)) : undefined;
 }
 
-function inferRequiredToolUseFromPrompt(prompt: string): RequiredToolUse | undefined {
+function inferRequiredToolUseFromPrompt(
+  prompt: string,
+  trigger?: RunEmbeddedPiAgentParams["trigger"],
+): RequiredToolUse | undefined {
+  if (trigger === "heartbeat") {
+    return {
+      toolNames: ["read"],
+      reason: "Heartbeat runs must check HEARTBEAT.md before replying.",
+    };
+  }
+
   const trimmedPrompt = prompt.trim();
   if (trimmedPrompt.startsWith("Read HEARTBEAT.md if it exists")) {
     return {
@@ -184,7 +194,11 @@ function inferRequiredToolUseFromPrompt(prompt: string): RequiredToolUse | undef
 function resolveRequiredToolUse(
   requiredToolUse: RunEmbeddedPiAgentParams["requireToolUse"],
   prompt: string,
+  trigger?: RunEmbeddedPiAgentParams["trigger"],
 ): RequiredToolUse | undefined {
+  if (requiredToolUse === false) {
+    return undefined;
+  }
   if (requiredToolUse) {
     if (requiredToolUse === true) {
       return { reason: "This run requires at least one tool call before success." };
@@ -194,7 +208,7 @@ function resolveRequiredToolUse(
       reason: requiredToolUse.reason?.trim() || "This run requires tool use before success.",
     };
   }
-  return inferRequiredToolUseFromPrompt(prompt);
+  return inferRequiredToolUseFromPrompt(prompt, trigger);
 }
 
 function didSatisfyRequiredToolUse(
@@ -356,7 +370,11 @@ export async function runEmbeddedPiAgent(
         : "plain"
       : "markdown");
   const isProbeSession = params.sessionId?.startsWith("probe-") ?? false;
-  const requiredToolUse = resolveRequiredToolUse(params.requireToolUse, params.prompt);
+  const requiredToolUse = resolveRequiredToolUse(
+    params.requireToolUse,
+    params.prompt,
+    params.trigger,
+  );
 
   return enqueueSession(() =>
     enqueueGlobal(async () => {
@@ -1399,43 +1417,6 @@ export async function runEmbeddedPiAgent(
             compactionCount: autoCompactionCount > 0 ? autoCompactionCount : undefined,
           };
 
-          if (
-            requiredToolUse &&
-            !didSatisfyRequiredToolUse(
-              {
-                toolMetas: attempt.toolMetas,
-                clientToolCall: attempt.clientToolCall,
-                didSendViaMessagingTool: attempt.didSendViaMessagingTool,
-                successfulCronAdds: attempt.successfulCronAdds,
-              },
-              requiredToolUse,
-            )
-          ) {
-            return {
-              payloads: [
-                {
-                  text: formatRequiredToolUseErrorMessage(requiredToolUse),
-                  isError: true,
-                },
-              ],
-              meta: {
-                durationMs: Date.now() - started,
-                agentMeta,
-                aborted,
-                systemPromptReport: attempt.systemPromptReport,
-                error: {
-                  kind: "required_tool_use",
-                  message: formatRequiredToolUseErrorMessage(requiredToolUse),
-                },
-              },
-              didSendViaMessagingTool: attempt.didSendViaMessagingTool,
-              messagingToolSentTexts: attempt.messagingToolSentTexts,
-              messagingToolSentMediaUrls: attempt.messagingToolSentMediaUrls,
-              messagingToolSentTargets: attempt.messagingToolSentTargets,
-              successfulCronAdds: attempt.successfulCronAdds,
-            };
-          }
-
           const payloads = buildEmbeddedRunPayloads({
             assistantTexts: attempt.assistantTexts,
             toolMetas: attempt.toolMetas,
@@ -1471,6 +1452,45 @@ export async function runEmbeddedPiAgent(
                 agentMeta,
                 aborted,
                 systemPromptReport: attempt.systemPromptReport,
+              },
+              didSendViaMessagingTool: attempt.didSendViaMessagingTool,
+              messagingToolSentTexts: attempt.messagingToolSentTexts,
+              messagingToolSentMediaUrls: attempt.messagingToolSentMediaUrls,
+              messagingToolSentTargets: attempt.messagingToolSentTargets,
+              successfulCronAdds: attempt.successfulCronAdds,
+            };
+          }
+
+          if (
+            requiredToolUse &&
+            !timedOut &&
+            !didSatisfyRequiredToolUse(
+              {
+                toolMetas: attempt.toolMetas,
+                clientToolCall: attempt.clientToolCall,
+                didSendViaMessagingTool: attempt.didSendViaMessagingTool,
+                successfulCronAdds: attempt.successfulCronAdds,
+              },
+              requiredToolUse,
+            )
+          ) {
+            const message = formatRequiredToolUseErrorMessage(requiredToolUse);
+            return {
+              payloads: [
+                {
+                  text: message,
+                  isError: true,
+                },
+              ],
+              meta: {
+                durationMs: Date.now() - started,
+                agentMeta,
+                aborted,
+                systemPromptReport: attempt.systemPromptReport,
+                error: {
+                  kind: "required_tool_use",
+                  message,
+                },
               },
               didSendViaMessagingTool: attempt.didSendViaMessagingTool,
               messagingToolSentTexts: attempt.messagingToolSentTexts,

@@ -65,6 +65,10 @@ import type { EmbeddedPiAgentMeta, EmbeddedPiRunResult } from "./types.js";
 import { describeUnknownError } from "./utils.js";
 
 type ApiKeyInfo = ResolvedProviderAuth;
+type RequiredToolUse = {
+  toolNames?: string[];
+  reason?: string;
+};
 
 type CopilotTokenState = {
   githubToken: string;
@@ -138,6 +142,103 @@ const hasUsageValues = (
   [usage.input, usage.output, usage.cacheRead, usage.cacheWrite, usage.total].some(
     (value) => typeof value === "number" && Number.isFinite(value) && value > 0,
   );
+
+function normalizeRequiredToolNames(toolNames: string[] | undefined): string[] | undefined {
+  const normalized = (toolNames ?? [])
+    .map((name) =>
+      String(name ?? "")
+        .trim()
+        .toLowerCase(),
+    )
+    .filter(Boolean);
+  return normalized.length > 0 ? Array.from(new Set(normalized)) : undefined;
+}
+
+function inferRequiredToolUseFromPrompt(prompt: string): RequiredToolUse | undefined {
+  const trimmedPrompt = prompt.trim();
+  if (trimmedPrompt.startsWith("Read HEARTBEAT.md if it exists")) {
+    return {
+      toolNames: ["read"],
+      reason: "Heartbeat prompts must check HEARTBEAT.md before replying.",
+    };
+  }
+
+  const explicitToolNames = Array.from(
+    trimmedPrompt.matchAll(/\b(?:call|use)\s+(?:the\s+)?([a-z0-9_]+)\s+tool\b/gi),
+  )
+    .map((match) => match[1]?.trim().toLowerCase())
+    .filter((name): name is string => Boolean(name));
+  if (explicitToolNames.length === 0) {
+    return undefined;
+  }
+  const toolNames = Array.from(new Set(explicitToolNames));
+  return {
+    toolNames,
+    reason:
+      toolNames.length === 1
+        ? `Prompt explicitly requires the ${toolNames[0]} tool.`
+        : `Prompt explicitly requires one of these tools: ${toolNames.join(", ")}.`,
+  };
+}
+
+function resolveRequiredToolUse(
+  requiredToolUse: RunEmbeddedPiAgentParams["requireToolUse"],
+  prompt: string,
+): RequiredToolUse | undefined {
+  if (requiredToolUse) {
+    if (requiredToolUse === true) {
+      return { reason: "This run requires at least one tool call before success." };
+    }
+    return {
+      toolNames: normalizeRequiredToolNames(requiredToolUse.toolNames),
+      reason: requiredToolUse.reason?.trim() || "This run requires tool use before success.",
+    };
+  }
+  return inferRequiredToolUseFromPrompt(prompt);
+}
+
+function didSatisfyRequiredToolUse(
+  attempt: {
+    toolMetas: Array<{ toolName: string; meta?: string }>;
+    clientToolCall?: { name: string; params: Record<string, unknown> };
+    didSendViaMessagingTool: boolean;
+    successfulCronAdds?: number;
+  },
+  requirement: RequiredToolUse,
+): boolean {
+  const usedToolNames = new Set(
+    attempt.toolMetas.map((entry) => entry.toolName.trim().toLowerCase()).filter(Boolean),
+  );
+  if (attempt.clientToolCall?.name) {
+    usedToolNames.add(attempt.clientToolCall.name.trim().toLowerCase());
+  }
+  if (attempt.didSendViaMessagingTool) {
+    usedToolNames.add("message");
+  }
+  if ((attempt.successfulCronAdds ?? 0) > 0) {
+    usedToolNames.add("cron");
+  }
+
+  const requiredToolNames = normalizeRequiredToolNames(requirement.toolNames);
+  if (!requiredToolNames) {
+    return usedToolNames.size > 0;
+  }
+  return requiredToolNames.some((toolName) => usedToolNames.has(toolName));
+}
+
+function formatRequiredToolUseErrorMessage(requirement: RequiredToolUse): string {
+  const requiredToolNames = normalizeRequiredToolNames(requirement.toolNames);
+  const expected =
+    requiredToolNames && requiredToolNames.length > 0
+      ? requiredToolNames.length === 1
+        ? `the ${requiredToolNames[0]} tool`
+        : `one of these tools: ${requiredToolNames.join(", ")}`
+      : "at least one tool";
+  const reason = requirement.reason?.trim();
+  return reason
+    ? `${reason} The model replied without calling ${expected}.`
+    : `Tool use was required for this run, but the model replied without calling ${expected}.`;
+}
 
 const mergeUsageIntoAccumulator = (
   target: UsageAccumulator,
@@ -255,6 +356,7 @@ export async function runEmbeddedPiAgent(
         : "plain"
       : "markdown");
   const isProbeSession = params.sessionId?.startsWith("probe-") ?? false;
+  const requiredToolUse = resolveRequiredToolUse(params.requireToolUse, params.prompt);
 
   return enqueueSession(() =>
     enqueueGlobal(async () => {
@@ -1296,6 +1398,43 @@ export async function runEmbeddedPiAgent(
             promptTokens,
             compactionCount: autoCompactionCount > 0 ? autoCompactionCount : undefined,
           };
+
+          if (
+            requiredToolUse &&
+            !didSatisfyRequiredToolUse(
+              {
+                toolMetas: attempt.toolMetas,
+                clientToolCall: attempt.clientToolCall,
+                didSendViaMessagingTool: attempt.didSendViaMessagingTool,
+                successfulCronAdds: attempt.successfulCronAdds,
+              },
+              requiredToolUse,
+            )
+          ) {
+            return {
+              payloads: [
+                {
+                  text: formatRequiredToolUseErrorMessage(requiredToolUse),
+                  isError: true,
+                },
+              ],
+              meta: {
+                durationMs: Date.now() - started,
+                agentMeta,
+                aborted,
+                systemPromptReport: attempt.systemPromptReport,
+                error: {
+                  kind: "required_tool_use",
+                  message: formatRequiredToolUseErrorMessage(requiredToolUse),
+                },
+              },
+              didSendViaMessagingTool: attempt.didSendViaMessagingTool,
+              messagingToolSentTexts: attempt.messagingToolSentTexts,
+              messagingToolSentMediaUrls: attempt.messagingToolSentMediaUrls,
+              messagingToolSentTargets: attempt.messagingToolSentTargets,
+              successfulCronAdds: attempt.successfulCronAdds,
+            };
+          }
 
           const payloads = buildEmbeddedRunPayloads({
             assistantTexts: attempt.assistantTexts,

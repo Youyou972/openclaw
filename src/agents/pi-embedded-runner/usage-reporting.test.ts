@@ -58,4 +58,114 @@ describe("runEmbeddedPiAgent usage reporting", () => {
     // If the bug exists, it will likely be 350
     expect(usage?.total).toBe(200);
   });
+
+  it("returns an error when a run explicitly requires tool use and no tool was called", async () => {
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce({
+      aborted: false,
+      promptError: null,
+      timedOut: false,
+      timedOutDuringCompaction: false,
+      sessionIdUsed: "test-session",
+      assistantTexts: ["I checked it."],
+      toolMetas: [],
+      didSendViaMessagingTool: false,
+      lastAssistant: {
+        usage: { input: 10, output: 5, total: 15 },
+        stopReason: "end_turn",
+      },
+      attemptUsage: { input: 10, output: 5, total: 15 },
+      messagingToolSentTexts: [],
+      messagingToolSentMediaUrls: [],
+      messagingToolSentTargets: [],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    const result = await runEmbeddedPiAgent({
+      sessionId: "test-session",
+      sessionKey: "test-key",
+      sessionFile: "/tmp/session.json",
+      workspaceDir: "/tmp/workspace",
+      prompt: "Do the thing.",
+      requireToolUse: true,
+      timeoutMs: 30000,
+      runId: "run-require-tool",
+    });
+
+    expect(result.payloads?.[0]?.isError).toBe(true);
+    expect(result.meta.error?.kind).toBe("required_tool_use");
+    expect(result.payloads?.[0]?.text).toContain("requires at least one tool call");
+  });
+
+  it("infers required read tool use for heartbeat prompts", async () => {
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce({
+      aborted: false,
+      promptError: null,
+      timedOut: false,
+      timedOutDuringCompaction: false,
+      sessionIdUsed: "test-session",
+      assistantTexts: ["HEARTBEAT_OK"],
+      toolMetas: [],
+      didSendViaMessagingTool: false,
+      lastAssistant: {
+        usage: { input: 10, output: 5, total: 15 },
+        stopReason: "end_turn",
+      },
+      attemptUsage: { input: 10, output: 5, total: 15 },
+      messagingToolSentTexts: [],
+      messagingToolSentMediaUrls: [],
+      messagingToolSentTargets: [],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    const result = await runEmbeddedPiAgent({
+      sessionId: "test-session",
+      sessionKey: "test-key",
+      sessionFile: "/tmp/session.json",
+      workspaceDir: "/tmp/workspace",
+      prompt:
+        "Read HEARTBEAT.md if it exists (workspace context). Follow it strictly. If nothing needs attention, reply HEARTBEAT_OK.",
+      timeoutMs: 30000,
+      runId: "run-heartbeat-tool-requirement",
+    });
+
+    expect(result.payloads?.[0]?.isError).toBe(true);
+    expect(result.meta.error?.kind).toBe("required_tool_use");
+    expect(result.payloads?.[0]?.text).toContain("HEARTBEAT.md");
+    expect(result.payloads?.[0]?.text).toContain("read tool");
+  });
+
+  it("allows success when a required tool was called", async () => {
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce({
+      aborted: false,
+      promptError: null,
+      timedOut: false,
+      timedOutDuringCompaction: false,
+      sessionIdUsed: "test-session",
+      assistantTexts: ["Done."],
+      toolMetas: [{ toolName: "cron", meta: "action=list" }],
+      didSendViaMessagingTool: false,
+      lastAssistant: {
+        usage: { input: 10, output: 5, total: 15 },
+        stopReason: "end_turn",
+      },
+      attemptUsage: { input: 10, output: 5, total: 15 },
+      messagingToolSentTexts: [],
+      messagingToolSentMediaUrls: [],
+      messagingToolSentTargets: [],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    const result = await runEmbeddedPiAgent({
+      sessionId: "test-session",
+      sessionKey: "test-key",
+      sessionFile: "/tmp/session.json",
+      workspaceDir: "/tmp/workspace",
+      prompt: "Call the cron tool with action=list.",
+      timeoutMs: 30000,
+      runId: "run-explicit-cron-tool",
+    });
+
+    expect(result.meta.error).toBeUndefined();
+    expect(result.payloads?.[0]?.isError).not.toBe(true);
+  });
 });
